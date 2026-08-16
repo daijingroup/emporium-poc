@@ -82,16 +82,23 @@ function closeUpload() {
   dragging.value = false
 }
 
+async function refreshUploadConflicts() {
+  const readyFiles = uploadQueue.value.filter((entry) => entry.status === 'ready').map((entry) => entry.file)
+  uploadConflicts.value = readyFiles.length ? await emporiumApi.conflicts(readyFiles, currentFolderId.value) : []
+}
+
 async function addFiles(fileList) {
   const files = Array.from(fileList || [])
   if (!files.length) return
-  const conflicts = await emporiumApi.conflicts(files, currentFolderId.value)
-  uploadConflicts.value = [...new Set([...uploadConflicts.value, ...conflicts])]
   for (const file of files) uploadQueue.value.push({ id: crypto.randomUUID(), file, name: file.name, size: file.size, progress: 0, status: 'ready' })
+  await refreshUploadConflicts()
 }
 
 function onDrop(event) { dragging.value = false; addFiles(event.dataTransfer.files) }
-function removeQueued(id) { uploadQueue.value = uploadQueue.value.filter((entry) => entry.id !== id) }
+async function removeQueued(id) {
+  uploadQueue.value = uploadQueue.value.filter((entry) => entry.id !== id)
+  await refreshUploadConflicts()
+}
 
 async function startUploads() {
   const queued = uploadQueue.value.filter((entry) => entry.status === 'ready')
@@ -105,6 +112,7 @@ async function startUploads() {
     entry.progress = 100
     entry.status = 'complete'
   }
+  uploadConflicts.value = []
   statusMessage.value = `${queued.length} ${queued.length === 1 ? 'file' : 'files'} uploaded`
   activeView.value = 'My files'
   await Promise.all([loadView(), refreshQuota()])
@@ -210,6 +218,8 @@ const filteredItems = computed(() => {
   return needle ? items.value.filter((item) => item.name.toLowerCase().includes(needle)) : items.value
 })
 const pendingUploads = computed(() => uploadQueue.value.filter((entry) => entry.status !== 'complete').length)
+const projectedUploadBytes = computed(() => uploadQueue.value.filter((entry) => entry.status === 'ready').reduce((sum, entry) => sum + entry.size, 0))
+const projectedUsedBytes = computed(() => Math.min(quota.value.quotaBytes, quota.value.usedBytes + projectedUploadBytes.value))
 const selectedShareTarget = computed(() => shareTargets.value.find((entry) => entry.id === shareTargetId.value))
 
 onMounted(() => Promise.all([loadView(), refreshQuota()]))
@@ -353,7 +363,7 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
             <div class="upload-progress"><span :style="{ width: `${entry.progress}%` }" /></div>
           </article>
         </div>
-        <div class="quota-preview"><span>Storage after upload</span><strong>{{ formatGb(quota.usedBytes) }} / {{ formatGb(quota.quotaBytes) }}</strong></div>
+        <div class="quota-preview"><span>Storage after upload</span><strong>{{ formatGb(projectedUsedBytes) }} / {{ formatGb(quota.quotaBytes) }}</strong></div>
         <div class="dialog-actions"><button class="ghost-action" :disabled="uploadQueue.some((entry) => entry.status === 'uploading')" @click="closeUpload">Cancel</button><button class="secondary-action" :disabled="!pendingUploads || uploadQueue.some((entry) => entry.status === 'uploading')" @click="startUploads">Upload {{ pendingUploads || '' }}</button></div>
       </section>
     </div>
