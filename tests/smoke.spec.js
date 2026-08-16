@@ -102,12 +102,29 @@ test('warns before sharing with an external organisation', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText('does not move or replicate it')
 })
 
-test('shows files shared with the current user', async ({ page }) => {
+test('distinguishes shared by you from shared with you', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: /Shared/ }).click()
-  await expect(page.getByRole('heading', { name: 'Shared' })).toBeVisible()
   await expect(page.getByText('Partner launch plan.pdf')).toBeVisible()
   await expect(page.getByText(/Shared with you · viewer/)).toBeVisible()
+  await expect(page.getByText(/Shared by you/).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Actions for Partner launch plan.pdf' }).click()
+  await expect(page.getByRole('button', { name: 'Rename' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Move to Trash' })).toHaveCount(0)
+})
+
+test('shows and restores file versions without deleting history', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Actions for Q3 roadmap.pdf' }).click()
+  await page.getByRole('button', { name: 'Version history' }).click()
+  await expect(page.getByRole('dialog', { name: 'Q3 roadmap.pdf' })).toBeVisible()
+  await expect(page.getByText('Version 3', { exact: true })).toBeVisible()
+  await expect(page.getByText('Alex Morgan')).toBeVisible()
+  await page.getByRole('button', { name: 'Restore version 2' }).click()
+  await expect(page.getByText(/Version 2 restored as the latest version/)).toBeVisible()
+  await expect(page.getByText('Version 4', { exact: true })).toBeVisible()
+  await expect(page.getByText('Restored from version 2')).toBeVisible()
+  await expect(page.getByText('Version 2', { exact: true })).toBeVisible()
 })
 
 test('switches to shared files', async ({ page }) => {
