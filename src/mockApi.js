@@ -61,8 +61,8 @@ function descendantIds(folderId) {
   return ids
 }
 
-function uniqueName(name, parentId) {
-  const existing = new Set(childrenOf(parentId).map((item) => item.name.toLowerCase()))
+function uniqueName(name, parentId, excludeId = null) {
+  const existing = new Set(childrenOf(parentId).filter((item) => item.id !== excludeId).map((item) => item.name.toLowerCase()))
   if (!existing.has(name.toLowerCase())) return name
   const dot = name.lastIndexOf('.')
   const hasExt = dot > 0
@@ -166,7 +166,7 @@ export const emporiumApi = {
 
   async rename(id, name) {
     const item = requireItem(id)
-    item.name = uniqueName(name.trim() || item.name, item.parentId)
+    item.name = uniqueName(name.trim() || item.name, item.parentId, item.id)
     item.modified = now()
     return wait(clone(item))
   },
@@ -175,8 +175,8 @@ export const emporiumApi = {
     const item = requireItem(id)
     if (id === parentId) throw new Error('Cannot move a folder into itself')
     if (item.type === 'folder' && descendantIds(id).includes(parentId)) throw new Error('Cannot move a folder into one of its descendants')
+    item.name = uniqueName(item.name, parentId, item.id)
     item.parentId = parentId
-    item.name = uniqueName(item.name, parentId)
     item.modified = now()
     return wait(clone(item))
   },
@@ -210,8 +210,10 @@ export const emporiumApi = {
         restored.push(item)
       }
     }
+    const restoredRoot = restored.find((item) => item.id === id)
+    if (restoredRoot) restoredRoot.name = uniqueName(restoredRoot.name, restoredRoot.parentId, restoredRoot.id)
     for (const item of restored) items.unshift(item)
-    return wait(clone(restored.find((item) => item.id === id)))
+    return wait(clone(restoredRoot))
   },
 
   async uploadFile(file, parentId = null, strategy = 'rename') {
