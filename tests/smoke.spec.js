@@ -80,6 +80,36 @@ test('shows duplicate upload conflict choices', async ({ page }) => {
   await expect(page.getByLabel('Replace existing files')).toBeChecked()
 })
 
+test('shares a file with a person and revokes access', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Actions for Q3 roadmap.pdf' }).click()
+  await page.getByRole('button', { name: 'Share' }).click()
+  await page.getByLabel('Person or organisation').selectOption('person-alex')
+  await page.getByLabel('Permission').selectOption('editor')
+  await page.getByRole('button', { name: 'Share', exact: true }).click()
+  await expect(page.getByText('Alex Morgan')).toBeVisible()
+  await expect(page.getByText(/person · editor/)).toBeVisible()
+  await page.getByRole('button', { name: 'Revoke Alex Morgan' }).click()
+  await expect(page.getByText(/Access revoked for Alex Morgan/)).toBeVisible()
+})
+
+test('warns before sharing with an external organisation', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Actions for Regional architecture.md' }).click()
+  await page.getByRole('button', { name: 'Share' }).click()
+  await page.getByLabel('Person or organisation').selectOption('org-northstar')
+  await expect(page.getByRole('alert')).toContainText('External sharing')
+  await expect(page.getByRole('alert')).toContainText('does not move or replicate it')
+})
+
+test('shows files shared with the current user', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: /Shared/ }).click()
+  await expect(page.getByRole('heading', { name: 'Shared' })).toBeVisible()
+  await expect(page.getByText('Partner launch plan.pdf')).toBeVisible()
+  await expect(page.getByText(/Shared with you · viewer/)).toBeVisible()
+})
+
 test('switches to shared files', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: /Shared/ }).click()
