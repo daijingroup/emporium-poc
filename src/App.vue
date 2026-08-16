@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { emporiumApi } from './mockApi'
 
 const views = ['My files', 'Recent', 'Shared', 'Trash']
@@ -19,6 +19,7 @@ const uploadOpen = ref(false)
 const uploadQueue = ref([])
 const uploadConflicts = ref([])
 const conflictStrategy = ref('rename')
+const projectedUploadBytes = ref(0)
 const dragging = ref(false)
 const quota = ref({ usedBytes: 0, quotaBytes: 100 * 1024 ** 3, percent: 24 })
 const fileInput = ref(null)
@@ -28,6 +29,7 @@ const shareTargets = ref([])
 const shareTargetId = ref('')
 const sharePermission = ref('viewer')
 const shareEntries = ref([])
+const sharePolicy = ref({ externalSharing: 'allowed', label: 'External sharing allowed with warning' })
 const versionOpen = ref(false)
 const versionItem = ref(null)
 const versionEntries = ref([])
@@ -73,6 +75,7 @@ function openUpload() {
   uploadOpen.value = true
   uploadQueue.value = []
   uploadConflicts.value = []
+  projectedUploadBytes.value = 0
   conflictStrategy.value = 'rename'
 }
 
@@ -82,9 +85,15 @@ function closeUpload() {
   dragging.value = false
 }
 
+async function refreshUploadProjection() {
+  const readyFiles = uploadQueue.value.filter((entry) => entry.status === 'ready').map((entry) => entry.file)
+  projectedUploadBytes.value = readyFiles.length ? await emporiumApi.projectUploads(readyFiles, currentFolderId.value, conflictStrategy.value) : 0
+}
+
 async function refreshUploadConflicts() {
   const readyFiles = uploadQueue.value.filter((entry) => entry.status === 'ready').map((entry) => entry.file)
   uploadConflicts.value = readyFiles.length ? await emporiumApi.conflicts(readyFiles, currentFolderId.value) : []
+  await refreshUploadProjection()
 }
 
 async function addFiles(fileList) {
@@ -113,6 +122,7 @@ async function startUploads() {
     entry.status = 'complete'
   }
   uploadConflicts.value = []
+  projectedUploadBytes.value = 0
   statusMessage.value = `${queued.length} ${queued.length === 1 ? 'file' : 'files'} uploaded`
   activeView.value = 'My files'
   await Promise.all([loadView(), refreshQuota()])
@@ -123,9 +133,12 @@ async function openShare(item) {
   shareItem.value = item
   shareTargetId.value = ''
   sharePermission.value = 'viewer'
-  const [targets, entries] = await Promise.all([emporiumApi.shareTargets(), emporiumApi.getShares(item.id)])
+  const [targets, entries, policy] = await Promise.all([
+    emporiumApi.shareTargets(), emporiumApi.getShares(item.id), emporiumApi.sharingPolicy(storageSpace.value)
+  ])
   shareTargets.value = targets
   shareEntries.value = entries
+  sharePolicy.value = policy
   shareOpen.value = true
 }
 
@@ -137,8 +150,8 @@ function closeShare() {
 }
 
 async function submitShare() {
-  if (!shareItem.value || !shareTargetId.value) return
-  shareEntries.value = await emporiumApi.share(shareItem.value.id, shareTargetId.value, sharePermission.value)
+  if (!shareItem.value || !shareTargetId.value || externalShareBlocked.value) return
+  shareEntries.value = await emporiumApi.share(shareItem.value.id, shareTargetId.value, sharePermission.value, storageSpace.value)
   statusMessage.value = `${shareItem.value.name} shared`
   await loadView()
 }
@@ -179,8 +192,8 @@ function openDialog(type, item = null) {
   else if (type === 'rename') dialogValue.value = item.name
   else dialogValue.value = ''
   if (type === 'move' || type === 'copy') {
-    emporiumApi.folders().then((folders) => {
-      folderChoices.value = [{ id: null, name: 'My files' }, ...folders.filter((folder) => folder.id !== item.id)]
+    emporiumApi.folderDestinations(item.id).then((folders) => {
+      folderChoices.value = [{ id: null, name: 'My files' }, ...folders]
     })
   }
 }
@@ -196,21 +209,21 @@ async function submitDialog() {
   if (type === 'copy') await emporiumApi.copy(item.id, dialogValue.value || null)
   statusMessage.value = type === 'new-folder' ? 'Folder created' : `${item.name} updated`
   closeDialog()
-  await loadView()
+  await Promise.all([loadView(), refreshQuota()])
 }
 
 async function removeItem(item) {
   menuItem.value = null
   await emporiumApi.remove(item.id)
   statusMessage.value = `${item.name} moved to Trash`
-  await loadView()
+  await Promise.all([loadView(), refreshQuota()])
 }
 
 async function restoreItem(item) {
   menuItem.value = null
   await emporiumApi.restore(item.id)
   statusMessage.value = `${item.name} restored`
-  await loadView()
+  await Promise.all([loadView(), refreshQuota()])
 }
 
 const filteredItems = computed(() => {
@@ -218,10 +231,11 @@ const filteredItems = computed(() => {
   return needle ? items.value.filter((item) => item.name.toLowerCase().includes(needle)) : items.value
 })
 const pendingUploads = computed(() => uploadQueue.value.filter((entry) => entry.status !== 'complete').length)
-const projectedUploadBytes = computed(() => uploadQueue.value.filter((entry) => entry.status === 'ready').reduce((sum, entry) => sum + entry.size, 0))
 const projectedUsedBytes = computed(() => Math.min(quota.value.quotaBytes, quota.value.usedBytes + projectedUploadBytes.value))
 const selectedShareTarget = computed(() => shareTargets.value.find((entry) => entry.id === shareTargetId.value))
+const externalShareBlocked = computed(() => selectedShareTarget.value?.external && sharePolicy.value.externalSharing === 'blocked')
 
+watch(conflictStrategy, () => { if (uploadOpen.value) refreshUploadProjection() })
 onMounted(() => Promise.all([loadView(), refreshQuota()]))
 </script>
 
@@ -309,6 +323,9 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
     <div v-if="shareOpen" class="dialog-backdrop" @click.self="closeShare">
       <form class="dialog" @submit.prevent="submitShare">
         <div><p class="eyebrow">Sharing</p><h2>Share {{ shareItem?.name }}</h2></div>
+        <div class="policy-card" :class="{ blocked: sharePolicy.externalSharing === 'blocked' }" role="status">
+          <strong>External sharing policy</strong><span>{{ sharePolicy.label }}</span>
+        </div>
         <label>Person or organisation
           <select v-model="shareTargetId" aria-label="Person or organisation">
             <option value="" disabled>Select a recipient</option>
@@ -319,14 +336,16 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
           <select v-model="sharePermission" aria-label="Permission"><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
         </label>
         <div v-if="selectedShareTarget?.external" class="conflict-card" role="alert">
-          <strong>External sharing</strong><p>{{ selectedShareTarget.name }} is outside your organisation. The file remains authoritative in the UK region; sharing grants access and does not move or replicate it.</p>
+          <strong>{{ externalShareBlocked ? 'External sharing blocked' : 'External sharing' }}</strong>
+          <p v-if="externalShareBlocked">{{ selectedShareTarget.name }} cannot be shared with because {{ storageSpace }} policy blocks external sharing.</p>
+          <p v-else>{{ selectedShareTarget.name }} is outside your organisation. The file remains authoritative in the UK region; sharing grants access and does not move or replicate it.</p>
         </div>
         <div v-if="shareEntries.length" class="upload-list" aria-label="Current access">
           <article v-for="entry in shareEntries" :key="entry.id" class="upload-item">
             <div class="upload-item__top"><div><strong>{{ entry.name }}</strong><span>{{ entry.kind }} · {{ entry.permission }}<template v-if="entry.external"> · external</template></span></div><button type="button" class="ghost-action" :aria-label="`Revoke ${entry.name}`" @click="revokeShare(entry)">Revoke</button></div>
           </article>
         </div>
-        <div class="dialog-actions"><button type="button" class="ghost-action" @click="closeShare">Close</button><button class="secondary-action" type="submit" :disabled="!shareTargetId">Share</button></div>
+        <div class="dialog-actions"><button type="button" class="ghost-action" @click="closeShare">Close</button><button class="secondary-action" type="submit" :disabled="!shareTargetId || externalShareBlocked">Share</button></div>
       </form>
     </div>
 
