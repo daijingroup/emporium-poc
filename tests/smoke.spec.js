@@ -72,6 +72,24 @@ test('offers move and copy actions', async ({ page }) => {
   await expect(page.getByText('Regional architecture.md')).toBeVisible()
 })
 
+test('folder copy destinations exclude descendants', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Actions for Projects' }).click()
+  await page.getByRole('button', { name: 'Copy' }).click()
+  await expect(page.getByLabel('Destination').getByRole('option', { name: 'Research' })).toHaveCount(0)
+})
+
+test('copy API rejects copying a folder into a descendant', async () => {
+  await expect(emporiumApi.copy('f1', 'p2')).rejects.toThrow('Cannot copy a folder into one of its descendants')
+})
+
+test('copying file content consumes quota', async () => {
+  const before = await emporiumApi.quota()
+  await emporiumApi.copy('d3', 'f1')
+  const after = await emporiumApi.quota()
+  expect(after.usedBytes).toBe(before.usedBytes + 86016)
+})
+
 test('queues and uploads multiple files', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: '↑ Upload' }).click()
@@ -122,6 +140,14 @@ test('shows projected storage for queued uploads', async ({ page }) => {
   await expect(quotaPreview).not.toHaveText(before)
 })
 
+test('replacement projection includes retained previous version', async () => {
+  const file = { name: 'Q3 roadmap.pdf', size: 1024 }
+  const renameDelta = await emporiumApi.projectUploads([file], null, 'rename')
+  const replaceDelta = await emporiumApi.projectUploads([file], null, 'replace')
+  expect(renameDelta).toBe(1024)
+  expect(replaceDelta).toBe(1024 + 2516582)
+})
+
 test('shares a file with a person and revokes access', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: 'Actions for Q3 roadmap.pdf' }).click()
@@ -142,6 +168,21 @@ test('warns before sharing with an external organisation', async ({ page }) => {
   await page.getByLabel('Person or organisation').selectOption('org-northstar')
   await expect(page.getByRole('alert')).toContainText('External sharing')
   await expect(page.getByRole('alert')).toContainText('does not move or replicate it')
+})
+
+test('organisation policy blocks external sharing', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'KiTech Software' }).click()
+  await page.getByRole('button', { name: 'Actions for Regional architecture.md' }).click()
+  await page.getByRole('button', { name: 'Share' }).click()
+  await expect(page.getByText('External sharing blocked by organisation policy')).toBeVisible()
+  await page.getByLabel('Person or organisation').selectOption('org-northstar')
+  await expect(page.getByRole('alert')).toContainText('External sharing blocked')
+  await expect(page.getByRole('button', { name: 'Share', exact: true })).toBeDisabled()
+})
+
+test('sharing API enforces external policy', async () => {
+  await expect(emporiumApi.share('d3', 'org-northstar', 'viewer', 'KiTech Software')).rejects.toThrow('External sharing blocked by policy')
 })
 
 test('distinguishes shared by you from shared with you', async ({ page }) => {
