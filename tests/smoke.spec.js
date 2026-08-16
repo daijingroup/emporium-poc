@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { emporiumApi } from '../src/mockApi.js'
 
 test('loads the Emporium file experience', async ({ page }) => {
   await page.goto('./')
@@ -144,6 +145,14 @@ test('shows and restores file versions without deleting history', async ({ page 
   await expect(page.getByText('Version 4', { exact: true })).toBeVisible()
   await expect(page.getByText('Restored from version 2')).toBeVisible()
   await expect(page.getByText('Version 2', { exact: true })).toBeVisible()
+})
+
+test('retained versions consume storage quota', async () => {
+  const before = await emporiumApi.quota()
+  await emporiumApi.restoreVersion('d1', 'd1-v2')
+  const after = await emporiumApi.quota()
+  expect(after.versionBytes).toBe(before.versionBytes + 2516582)
+  expect(after.usedBytes).toBe(before.usedBytes + 2516582)
 })
 
 test('switches to shared files', async ({ page }) => {
