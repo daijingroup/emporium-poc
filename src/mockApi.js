@@ -23,6 +23,17 @@ const shareTargets = [
   { id: 'org-kitech', name: 'KiTech Software', detail: 'Organisation', kind: 'organisation', external: false },
   { id: 'org-northstar', name: 'Northstar Labs', detail: 'External organisation', kind: 'organisation', external: true }
 ]
+const versions = {
+  d1: [
+    { id: 'd1-v3', number: 3, createdAt: 'Today, 14:08', modifiedBy: 'You', size: '2.4 MB', bytes: 2516582, current: true },
+    { id: 'd1-v2', number: 2, createdAt: '14 Aug 2026, 18:32', modifiedBy: 'Alex Morgan', size: '2.3 MB', bytes: 2411724, current: false },
+    { id: 'd1-v1', number: 1, createdAt: '12 Aug 2026, 09:17', modifiedBy: 'You', size: '2.1 MB', bytes: 2202009, current: false }
+  ],
+  d3: [
+    { id: 'd3-v2', number: 2, createdAt: '13 Aug 2026, 16:21', modifiedBy: 'You', size: '84 KB', bytes: 86016, current: true },
+    { id: 'd3-v1', number: 1, createdAt: '11 Aug 2026, 10:04', modifiedBy: 'You', size: '77 KB', bytes: 78848, current: false }
+  ]
+}
 
 const QUOTA_BYTES = 100 * 1024 * 1024 * 1024
 const BASE_USED_BYTES = 24 * 1024 * 1024 * 1024
@@ -67,6 +78,7 @@ function copyRecursive(sourceId, parentId) {
   const copy = { ...clone(source), id: crypto.randomUUID(), parentId, name: uniqueName(source.name, parentId), modified: now(), shared: false, sharedWithMe: false }
   items.unshift(copy)
   if (source.type === 'folder') for (const child of childrenOf(sourceId)) copyRecursive(child.id, copy.id)
+  if (source.type === 'file') versions[copy.id] = [{ id: `${copy.id}-v1`, number: 1, createdAt: now(), modifiedBy: 'You', size: copy.size || '—', bytes: copy.bytes || 0, current: true }]
   return copy
 }
 
@@ -78,6 +90,24 @@ function formatBytes(bytes) {
 
 function uploadedBytes() {
   return items.filter((item) => item.type === 'file' && item.uploaded).reduce((sum, item) => sum + (item.bytes || 0), 0)
+}
+
+function ensureVersions(item) {
+  if (item.type !== 'file') return []
+  versions[item.id] ||= [{ id: `${item.id}-v1`, number: 1, createdAt: item.modified, modifiedBy: item.owner === 'You' ? 'You' : item.owner, size: item.size || '—', bytes: item.bytes || 0, current: true }]
+  return versions[item.id]
+}
+
+function addVersion(item, bytes, modifiedBy = 'You') {
+  const history = ensureVersions(item)
+  for (const version of history) version.current = false
+  const number = Math.max(0, ...history.map((version) => version.number)) + 1
+  const version = { id: `${item.id}-v${number}-${crypto.randomUUID()}`, number, createdAt: now(), modifiedBy, size: formatBytes(bytes), bytes, current: true }
+  history.unshift(version)
+  item.bytes = bytes
+  item.size = version.size
+  item.modified = now()
+  return version
 }
 
 export const emporiumApi = {
@@ -112,6 +142,20 @@ export const emporiumApi = {
     shares[id] = (shares[id] || []).filter((entry) => entry.id !== shareId)
     item.shared = shares[id].length > 0
     return wait(clone(shares[id]), 60)
+  },
+  async versions(id) {
+    const item = requireItem(id)
+    if (item.type !== 'file') throw new Error('Folders do not have file versions')
+    return wait(clone(ensureVersions(item)), 40)
+  },
+  async restoreVersion(id, versionId) {
+    const item = requireItem(id)
+    const history = ensureVersions(item)
+    const source = history.find((version) => version.id === versionId)
+    if (!source) throw new Error('Version not found')
+    const restored = addVersion(item, source.bytes, 'You')
+    restored.restoredFrom = source.number
+    return wait(clone({ item, versions: history }), 80)
   },
 
   async createFolder(name, parentId = null) {
@@ -172,18 +216,18 @@ export const emporiumApi = {
 
   async uploadFile(file, parentId = null, strategy = 'rename') {
     const existing = childrenOf(parentId).find((item) => item.name.toLowerCase() === file.name.toLowerCase())
-    let name = file.name
-    if (existing && strategy === 'replace') {
-      const index = items.findIndex((item) => item.id === existing.id)
-      items.splice(index, 1)
-    } else if (existing) {
-      name = uniqueName(file.name, parentId)
+    if (existing && strategy === 'replace' && existing.type === 'file') {
+      addVersion(existing, file.size || 0, 'You')
+      existing.uploaded = true
+      return wait(clone(existing), 120)
     }
+    const name = existing ? uniqueName(file.name, parentId) : file.name
     const entry = {
       id: crypto.randomUUID(), parentId, type: 'file', name, modified: now(), owner: 'You', region: 'UK', shared: false,
       size: formatBytes(file.size || 0), bytes: file.size || 0, uploaded: true
     }
     items.unshift(entry)
+    versions[entry.id] = [{ id: `${entry.id}-v1`, number: 1, createdAt: now(), modifiedBy: 'You', size: entry.size, bytes: entry.bytes, current: true }]
     return wait(clone(entry), 120)
   },
 
