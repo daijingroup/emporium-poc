@@ -100,6 +100,28 @@ test('shows duplicate upload conflict choices', async ({ page }) => {
   await expect(page.getByLabel('Replace existing files')).toBeChecked()
 })
 
+test('removing a queued duplicate clears its conflict warning', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: '↑ Upload' }).click()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'Q3 roadmap.pdf', mimeType: 'application/pdf', buffer: Buffer.from('replacement')
+  })
+  await expect(page.getByText(/existing file has the same name/i)).toBeVisible()
+  await page.getByRole('button', { name: 'Remove Q3 roadmap.pdf' }).click()
+  await expect(page.getByText(/existing file has the same name/i)).toHaveCount(0)
+})
+
+test('shows projected storage for queued uploads', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: '↑ Upload' }).click()
+  const quotaPreview = page.locator('.quota-preview strong')
+  const before = await quotaPreview.textContent()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'large.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(16 * 1024 * 1024)
+  })
+  await expect(quotaPreview).not.toHaveText(before)
+})
+
 test('shares a file with a person and revokes access', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: 'Actions for Q3 roadmap.pdf' }).click()
