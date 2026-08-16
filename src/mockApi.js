@@ -7,10 +7,23 @@ const items = [
   { id: 'd3', parentId: null, type: 'file', name: 'Regional architecture.md', modified: '13 Aug 2026', owner: 'You', region: 'UK', shared: false, size: '84 KB', bytes: 86016 },
   { id: 'p1', parentId: 'f1', type: 'file', name: 'Emporium brief.md', modified: 'Today, 16:10', owner: 'You', region: 'UK', shared: false, size: '18 KB', bytes: 18432 },
   { id: 'p2', parentId: 'f1', type: 'folder', name: 'Research', modified: 'Today, 15:30', owner: 'You', region: 'UK', shared: false },
-  { id: 'r1', parentId: 'p2', type: 'file', name: 'Storage notes.txt', modified: 'Today, 15:12', owner: 'You', region: 'UK', shared: false, size: '6 KB', bytes: 6144 }
+  { id: 'r1', parentId: 'p2', type: 'file', name: 'Storage notes.txt', modified: 'Today, 15:12', owner: 'You', region: 'UK', shared: false, size: '6 KB', bytes: 6144 },
+  { id: 'in1', parentId: null, type: 'file', name: 'Partner launch plan.pdf', modified: 'Today, 11:20', owner: 'Northstar Labs', region: 'UK', shared: true, sharedWithMe: true, permission: 'viewer', size: '1.8 MB', bytes: 1887437 }
 ]
 
 const trash = []
+const shares = {
+  f2: [{ id: 's1', targetId: 'org-kitech', name: 'KiTech Software', kind: 'organisation', permission: 'editor', external: false }],
+  f3: [{ id: 's2', targetId: 'person-alex', name: 'Alex Morgan', kind: 'person', permission: 'viewer', external: false }],
+  d2: [{ id: 's3', targetId: 'org-kitech', name: 'KiTech Software', kind: 'organisation', permission: 'editor', external: false }]
+}
+const shareTargets = [
+  { id: 'person-alex', name: 'Alex Morgan', detail: 'alex@kitechsoftware.uk', kind: 'person', external: false },
+  { id: 'person-jordan', name: 'Jordan Lee', detail: 'jordan@kitechsoftware.uk', kind: 'person', external: false },
+  { id: 'org-kitech', name: 'KiTech Software', detail: 'Organisation', kind: 'organisation', external: false },
+  { id: 'org-northstar', name: 'Northstar Labs', detail: 'External organisation', kind: 'organisation', external: true }
+]
+
 const QUOTA_BYTES = 100 * 1024 * 1024 * 1024
 const BASE_USED_BYTES = 24 * 1024 * 1024 * 1024
 const wait = (value, ms = 80) => new Promise((resolve) => setTimeout(() => resolve(value), ms))
@@ -23,7 +36,7 @@ function requireItem(id) {
   return item
 }
 
-function childrenOf(parentId) { return items.filter((item) => item.parentId === parentId) }
+function childrenOf(parentId) { return items.filter((item) => item.parentId === parentId && !item.sharedWithMe) }
 
 function descendantIds(folderId) {
   const ids = []
@@ -51,7 +64,7 @@ function uniqueName(name, parentId) {
 
 function copyRecursive(sourceId, parentId) {
   const source = requireItem(sourceId)
-  const copy = { ...clone(source), id: crypto.randomUUID(), parentId, name: uniqueName(source.name, parentId), modified: now() }
+  const copy = { ...clone(source), id: crypto.randomUUID(), parentId, name: uniqueName(source.name, parentId), modified: now(), shared: false, sharedWithMe: false }
   items.unshift(copy)
   if (source.type === 'folder') for (const child of childrenOf(sourceId)) copyRecursive(child.id, copy.id)
   return copy
@@ -70,8 +83,8 @@ function uploadedBytes() {
 export const emporiumApi = {
   async list(parentId = null) { return wait(clone(childrenOf(parentId))) },
   async get(id) { return wait(clone(requireItem(id))) },
-  async recent() { return wait(clone(items.slice(0, 6))) },
-  async shared() { return wait(clone(items.filter((item) => item.shared))) },
+  async recent() { return wait(clone(items.filter((item) => !item.sharedWithMe).slice(0, 6))) },
+  async shared() { return wait(clone(items.filter((item) => item.shared || item.sharedWithMe))) },
   async trash() { return wait(clone(trash)) },
   async quota() {
     const usedBytes = BASE_USED_BYTES + uploadedBytes()
@@ -80,6 +93,25 @@ export const emporiumApi = {
   async conflicts(files, parentId = null) {
     const existing = new Set(childrenOf(parentId).map((item) => item.name.toLowerCase()))
     return wait(files.filter((file) => existing.has(file.name.toLowerCase())).map((file) => file.name), 30)
+  },
+  async shareTargets() { return wait(clone(shareTargets), 30) },
+  async getShares(id) { return wait(clone(shares[id] || []), 30) },
+  async share(id, targetId, permission = 'viewer') {
+    const item = requireItem(id)
+    const target = shareTargets.find((entry) => entry.id === targetId)
+    if (!target) throw new Error('Share target not found')
+    shares[id] ||= []
+    const existing = shares[id].find((entry) => entry.targetId === targetId)
+    if (existing) existing.permission = permission
+    else shares[id].push({ id: crypto.randomUUID(), targetId, name: target.name, kind: target.kind, permission, external: target.external })
+    item.shared = true
+    return wait(clone(shares[id]), 60)
+  },
+  async revokeShare(id, shareId) {
+    const item = requireItem(id)
+    shares[id] = (shares[id] || []).filter((entry) => entry.id !== shareId)
+    item.shared = shares[id].length > 0
+    return wait(clone(shares[id]), 60)
   },
 
   async createFolder(name, parentId = null) {
@@ -155,9 +187,6 @@ export const emporiumApi = {
     return wait(clone(entry), 120)
   },
 
-  async upload(name = 'Untitled upload', parentId = null) {
-    return this.uploadFile({ name, size: 0 }, parentId, 'rename')
-  },
-
-  async folders() { return wait(clone(items.filter((item) => item.type === 'folder'))) }
+  async upload(name = 'Untitled upload', parentId = null) { return this.uploadFile({ name, size: 0 }, parentId, 'rename') },
+  async folders() { return wait(clone(items.filter((item) => item.type === 'folder' && !item.sharedWithMe))) }
 }
