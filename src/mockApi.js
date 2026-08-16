@@ -92,6 +92,10 @@ function uploadedBytes() {
   return items.filter((item) => item.type === 'file' && item.uploaded).reduce((sum, item) => sum + (item.bytes || 0), 0)
 }
 
+function retainedVersionBytes() {
+  return Object.values(versions).flat().filter((version) => !version.current).reduce((sum, version) => sum + (version.bytes || 0), 0)
+}
+
 function ensureVersions(item) {
   if (item.type !== 'file') return []
   versions[item.id] ||= [{ id: `${item.id}-v1`, number: 1, createdAt: item.modified, modifiedBy: item.owner === 'You' ? 'You' : item.owner, size: item.size || '—', bytes: item.bytes || 0, current: true }]
@@ -117,8 +121,9 @@ export const emporiumApi = {
   async shared() { return wait(clone(items.filter((item) => item.shared || item.sharedWithMe))) },
   async trash() { return wait(clone(trash)) },
   async quota() {
-    const usedBytes = BASE_USED_BYTES + uploadedBytes()
-    return wait({ usedBytes, quotaBytes: QUOTA_BYTES, percent: Math.min(100, Math.round((usedBytes / QUOTA_BYTES) * 100)) }, 30)
+    const versionBytes = retainedVersionBytes()
+    const usedBytes = BASE_USED_BYTES + uploadedBytes() + versionBytes
+    return wait({ usedBytes, versionBytes, quotaBytes: QUOTA_BYTES, percent: Math.min(100, Math.round((usedBytes / QUOTA_BYTES) * 100)) }, 30)
   },
   async conflicts(files, parentId = null) {
     const existing = new Set(childrenOf(parentId).map((item) => item.name.toLowerCase()))
