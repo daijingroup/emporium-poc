@@ -22,9 +22,14 @@ const conflictStrategy = ref('rename')
 const dragging = ref(false)
 const quota = ref({ usedBytes: 0, quotaBytes: 100 * 1024 ** 3, percent: 24 })
 const fileInput = ref(null)
+const shareOpen = ref(false)
+const shareItem = ref(null)
+const shareTargets = ref([])
+const shareTargetId = ref('')
+const sharePermission = ref('viewer')
+const shareEntries = ref([])
 
 function formatGb(bytes) { return `${(bytes / 1024 ** 3).toFixed(bytes % 1024 ** 3 === 0 ? 0 : 1)} GB` }
-
 async function refreshQuota() { quota.value = await emporiumApi.quota() }
 
 async function loadView() {
@@ -79,19 +84,11 @@ async function addFiles(fileList) {
   if (!files.length) return
   const conflicts = await emporiumApi.conflicts(files, currentFolderId.value)
   uploadConflicts.value = [...new Set([...uploadConflicts.value, ...conflicts])]
-  for (const file of files) {
-    uploadQueue.value.push({ id: crypto.randomUUID(), file, name: file.name, size: file.size, progress: 0, status: 'ready' })
-  }
+  for (const file of files) uploadQueue.value.push({ id: crypto.randomUUID(), file, name: file.name, size: file.size, progress: 0, status: 'ready' })
 }
 
-function onDrop(event) {
-  dragging.value = false
-  addFiles(event.dataTransfer.files)
-}
-
-function removeQueued(id) {
-  uploadQueue.value = uploadQueue.value.filter((entry) => entry.id !== id)
-}
+function onDrop(event) { dragging.value = false; addFiles(event.dataTransfer.files) }
+function removeQueued(id) { uploadQueue.value = uploadQueue.value.filter((entry) => entry.id !== id) }
 
 async function startUploads() {
   const queued = uploadQueue.value.filter((entry) => entry.status === 'ready')
@@ -108,6 +105,38 @@ async function startUploads() {
   statusMessage.value = `${queued.length} ${queued.length === 1 ? 'file' : 'files'} uploaded`
   activeView.value = 'My files'
   await Promise.all([loadView(), refreshQuota()])
+}
+
+async function openShare(item) {
+  menuItem.value = null
+  shareItem.value = item
+  shareTargetId.value = ''
+  sharePermission.value = 'viewer'
+  const [targets, entries] = await Promise.all([emporiumApi.shareTargets(), emporiumApi.getShares(item.id)])
+  shareTargets.value = targets
+  shareEntries.value = entries
+  shareOpen.value = true
+}
+
+function closeShare() {
+  shareOpen.value = false
+  shareItem.value = null
+  shareTargetId.value = ''
+  shareEntries.value = []
+}
+
+async function submitShare() {
+  if (!shareItem.value || !shareTargetId.value) return
+  shareEntries.value = await emporiumApi.share(shareItem.value.id, shareTargetId.value, sharePermission.value)
+  statusMessage.value = `${shareItem.value.name} shared`
+  await loadView()
+}
+
+async function revokeShare(entry) {
+  if (!shareItem.value) return
+  shareEntries.value = await emporiumApi.revokeShare(shareItem.value.id, entry.id)
+  statusMessage.value = `Access revoked for ${entry.name}`
+  await loadView()
 }
 
 function openDialog(type, item = null) {
@@ -156,6 +185,7 @@ const filteredItems = computed(() => {
   return needle ? items.value.filter((item) => item.name.toLowerCase().includes(needle)) : items.value
 })
 const pendingUploads = computed(() => uploadQueue.value.filter((entry) => entry.status !== 'complete').length)
+const selectedShareTarget = computed(() => shareTargets.value.find((entry) => entry.id === shareTargetId.value))
 
 onMounted(() => Promise.all([loadView(), refreshQuota()]))
 </script>
@@ -212,15 +242,16 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
           <div v-if="loading" class="empty-state">Loading files…</div>
           <div v-else-if="filteredItems.length === 0" class="empty-state"><strong>No files here</strong><span>{{ query ? 'Try another search.' : 'This view is currently empty.' }}</span></div>
           <div v-for="item in filteredItems" v-else :key="item.id" class="file-row" @dblclick="openFolder(item)">
-            <button class="file-main" @click="openFolder(item)"><span class="file-name"><span :class="['file-icon', item.type]">{{ item.type === 'folder' ? '▰' : '▤' }}</span><span><strong>{{ item.name }}</strong><small v-if="item.size">{{ item.size }}</small></span></span></button>
+            <button class="file-main" @click="openFolder(item)"><span class="file-name"><span :class="['file-icon', item.type]">{{ item.type === 'folder' ? '▰' : '▤' }}</span><span><strong>{{ item.name }}</strong><small v-if="item.size">{{ item.size }}<template v-if="item.sharedWithMe"> · Shared with you · {{ item.permission }}</template><template v-else-if="item.shared"> · Shared</template></small></span></span></button>
             <span>{{ item.owner }}</span><span>{{ item.modified }}</span><span><span class="region-chip">{{ item.region }}</span></span>
             <div class="row-actions">
               <button class="more" :aria-label="`Actions for ${item.name}`" @click.stop="menuItem = menuItem?.id === item.id ? null : item">•••</button>
               <div v-if="menuItem?.id === item.id" class="context-menu">
                 <template v-if="activeView !== 'Trash'">
                   <button v-if="item.type === 'folder' && activeView === 'My files'" @click="openFolder(item)">Open</button>
-                  <button @click="openDialog('rename', item)">Rename</button><button @click="openDialog('move', item)">Move</button><button @click="openDialog('copy', item)">Copy</button>
-                  <button class="danger" @click="removeItem(item)">Move to Trash</button>
+                  <button v-if="!item.sharedWithMe" @click="openShare(item)">Share</button>
+                  <button v-if="!item.sharedWithMe" @click="openDialog('rename', item)">Rename</button><button v-if="!item.sharedWithMe" @click="openDialog('move', item)">Move</button><button v-if="!item.sharedWithMe" @click="openDialog('copy', item)">Copy</button>
+                  <button v-if="!item.sharedWithMe" class="danger" @click="removeItem(item)">Move to Trash</button>
                 </template>
                 <button v-else @click="restoreItem(item)">Restore</button>
               </div>
@@ -239,6 +270,30 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
       </form>
     </div>
 
+    <div v-if="shareOpen" class="dialog-backdrop" @click.self="closeShare">
+      <form class="dialog" @submit.prevent="submitShare">
+        <div><p class="eyebrow">Sharing</p><h2>Share {{ shareItem?.name }}</h2></div>
+        <label>Person or organisation
+          <select v-model="shareTargetId" aria-label="Person or organisation">
+            <option value="" disabled>Select a recipient</option>
+            <option v-for="target in shareTargets" :key="target.id" :value="target.id">{{ target.name }} — {{ target.detail }}</option>
+          </select>
+        </label>
+        <label>Permission
+          <select v-model="sharePermission" aria-label="Permission"><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
+        </label>
+        <div v-if="selectedShareTarget?.external" class="conflict-card" role="alert">
+          <strong>External sharing</strong><p>{{ selectedShareTarget.name }} is outside your organisation. The file remains authoritative in the UK region; sharing grants access and does not move or replicate it.</p>
+        </div>
+        <div v-if="shareEntries.length" class="upload-list" aria-label="Current access">
+          <article v-for="entry in shareEntries" :key="entry.id" class="upload-item">
+            <div class="upload-item__top"><div><strong>{{ entry.name }}</strong><span>{{ entry.kind }} · {{ entry.permission }}<template v-if="entry.external"> · external</template></span></div><button type="button" class="ghost-action" :aria-label="`Revoke ${entry.name}`" @click="revokeShare(entry)">Revoke</button></div>
+          </article>
+        </div>
+        <div class="dialog-actions"><button type="button" class="ghost-action" @click="closeShare">Close</button><button class="secondary-action" type="submit" :disabled="!shareTargetId">Share</button></div>
+      </form>
+    </div>
+
     <div v-if="uploadOpen" class="dialog-backdrop upload-backdrop" @click.self="closeUpload">
       <section class="upload-dialog" role="dialog" aria-modal="true" aria-labelledby="upload-title">
         <div class="upload-header"><div><p class="eyebrow">{{ breadcrumbs.at(-1)?.name }}</p><h2 id="upload-title">Upload files</h2></div><button class="icon-button" aria-label="Close upload" @click="closeUpload">×</button></div>
@@ -246,21 +301,18 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
         <button class="drop-zone" :class="{ dragging }" @click="fileInput.click()" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="onDrop">
           <strong>Drop files here</strong><span>or choose files from this device</span><small>Multiple files are supported</small>
         </button>
-
         <div v-if="uploadConflicts.length" class="conflict-card">
           <strong>{{ uploadConflicts.length }} existing {{ uploadConflicts.length === 1 ? 'file has' : 'files have' }} the same name</strong>
           <p>{{ uploadConflicts.join(', ') }}</p>
           <label><input v-model="conflictStrategy" type="radio" value="rename" /> Keep both and rename new files</label>
           <label><input v-model="conflictStrategy" type="radio" value="replace" /> Replace existing files</label>
         </div>
-
         <div v-if="uploadQueue.length" class="upload-list" aria-label="Upload queue">
           <article v-for="entry in uploadQueue" :key="entry.id" class="upload-item">
             <div class="upload-item__top"><div><strong>{{ entry.name }}</strong><span>{{ (entry.size / 1024 ** 2).toFixed(1) }} MB</span></div><button v-if="entry.status === 'ready'" class="icon-button" :aria-label="`Remove ${entry.name}`" @click="removeQueued(entry.id)">×</button><span v-else>{{ entry.status === 'complete' ? 'Done' : `${entry.progress}%` }}</span></div>
             <div class="upload-progress"><span :style="{ width: `${entry.progress}%` }" /></div>
           </article>
         </div>
-
         <div class="quota-preview"><span>Storage after upload</span><strong>{{ formatGb(quota.usedBytes) }} / {{ formatGb(quota.quotaBytes) }}</strong></div>
         <div class="dialog-actions"><button class="ghost-action" :disabled="uploadQueue.some((entry) => entry.status === 'uploading')" @click="closeUpload">Cancel</button><button class="secondary-action" :disabled="!pendingUploads || uploadQueue.some((entry) => entry.status === 'uploading')" @click="startUploads">Upload {{ pendingUploads || '' }}</button></div>
       </section>
