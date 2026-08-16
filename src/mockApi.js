@@ -23,6 +23,10 @@ const shareTargets = [
   { id: 'org-kitech', name: 'KiTech Software', detail: 'Organisation', kind: 'organisation', external: false },
   { id: 'org-northstar', name: 'Northstar Labs', detail: 'External organisation', kind: 'organisation', external: true }
 ]
+const sharingPolicies = {
+  Personal: { externalSharing: 'allowed', label: 'External sharing allowed with warning' },
+  'KiTech Software': { externalSharing: 'blocked', label: 'External sharing blocked by organisation policy' }
+}
 const versions = {
   d1: [
     { id: 'd1-v3', number: 3, createdAt: 'Today, 14:08', modifiedBy: 'You', size: '2.4 MB', bytes: 2516582, current: true },
@@ -88,8 +92,10 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }
 
-function uploadedBytes() {
-  return items.filter((item) => item.type === 'file' && item.uploaded).reduce((sum, item) => sum + (item.bytes || 0), 0)
+function currentFileBytes() {
+  const active = items.filter((item) => item.type === 'file' && !item.sharedWithMe).reduce((sum, item) => sum + (item.bytes || 0), 0)
+  const deleted = trash.filter((item) => item.type === 'file' && !item.sharedWithMe).reduce((sum, item) => sum + (item.bytes || 0), 0)
+  return active + deleted
 }
 
 function retainedVersionBytes() {
@@ -114,6 +120,14 @@ function addVersion(item, bytes, modifiedBy = 'You') {
   return version
 }
 
+function uploadDelta(file, parentId, strategy) {
+  const existing = childrenOf(parentId).find((item) => item.name.toLowerCase() === file.name.toLowerCase())
+  if (existing && strategy === 'replace' && existing.type === 'file') {
+    return (file.size || 0) + (existing.bytes || 0)
+  }
+  return file.size || 0
+}
+
 export const emporiumApi = {
   async list(parentId = null) { return wait(clone(childrenOf(parentId))) },
   async get(id) { return wait(clone(requireItem(id))) },
@@ -121,20 +135,27 @@ export const emporiumApi = {
   async shared() { return wait(clone(items.filter((item) => item.shared || item.sharedWithMe))) },
   async trash() { return wait(clone(trash)) },
   async quota() {
+    const fileBytes = currentFileBytes()
     const versionBytes = retainedVersionBytes()
-    const usedBytes = BASE_USED_BYTES + uploadedBytes() + versionBytes
-    return wait({ usedBytes, versionBytes, quotaBytes: QUOTA_BYTES, percent: Math.min(100, Math.round((usedBytes / QUOTA_BYTES) * 100)) }, 30)
+    const usedBytes = BASE_USED_BYTES + fileBytes + versionBytes
+    return wait({ usedBytes, fileBytes, versionBytes, quotaBytes: QUOTA_BYTES, percent: Math.min(100, Math.round((usedBytes / QUOTA_BYTES) * 100)) }, 30)
+  },
+  async projectUploads(files, parentId = null, strategy = 'rename') {
+    return wait(files.reduce((sum, file) => sum + uploadDelta(file, parentId, strategy), 0), 20)
   },
   async conflicts(files, parentId = null) {
     const existing = new Set(childrenOf(parentId).map((item) => item.name.toLowerCase()))
     return wait(files.filter((file) => existing.has(file.name.toLowerCase())).map((file) => file.name), 30)
   },
   async shareTargets() { return wait(clone(shareTargets), 30) },
+  async sharingPolicy(space = 'Personal') { return wait(clone(sharingPolicies[space] || sharingPolicies.Personal), 20) },
   async getShares(id) { return wait(clone(shares[id] || []), 30) },
-  async share(id, targetId, permission = 'viewer') {
+  async share(id, targetId, permission = 'viewer', space = 'Personal') {
     const item = requireItem(id)
     const target = shareTargets.find((entry) => entry.id === targetId)
     if (!target) throw new Error('Share target not found')
+    const policy = sharingPolicies[space] || sharingPolicies.Personal
+    if (target.external && policy.externalSharing === 'blocked') throw new Error('External sharing blocked by policy')
     shares[id] ||= []
     const existing = shares[id].find((entry) => entry.targetId === targetId)
     if (existing) existing.permission = permission
@@ -186,7 +207,12 @@ export const emporiumApi = {
     return wait(clone(item))
   },
 
-  async copy(id, parentId = null) { return wait(clone(copyRecursive(id, parentId))) },
+  async copy(id, parentId = null) {
+    const item = requireItem(id)
+    if (id === parentId) throw new Error('Cannot copy a folder into itself')
+    if (item.type === 'folder' && descendantIds(id).includes(parentId)) throw new Error('Cannot copy a folder into one of its descendants')
+    return wait(clone(copyRecursive(id, parentId)))
+  },
 
   async remove(id) {
     const root = requireItem(id)
@@ -225,13 +251,12 @@ export const emporiumApi = {
     const existing = childrenOf(parentId).find((item) => item.name.toLowerCase() === file.name.toLowerCase())
     if (existing && strategy === 'replace' && existing.type === 'file') {
       addVersion(existing, file.size || 0, 'You')
-      existing.uploaded = true
       return wait(clone(existing), 120)
     }
     const name = existing ? uniqueName(file.name, parentId) : file.name
     const entry = {
       id: crypto.randomUUID(), parentId, type: 'file', name, modified: now(), owner: 'You', region: 'UK', shared: false,
-      size: formatBytes(file.size || 0), bytes: file.size || 0, uploaded: true
+      size: formatBytes(file.size || 0), bytes: file.size || 0
     }
     items.unshift(entry)
     versions[entry.id] = [{ id: `${entry.id}-v1`, number: 1, createdAt: now(), modifiedBy: 'You', size: entry.size, bytes: entry.bytes, current: true }]
@@ -239,5 +264,10 @@ export const emporiumApi = {
   },
 
   async upload(name = 'Untitled upload', parentId = null) { return this.uploadFile({ name, size: 0 }, parentId, 'rename') },
-  async folders() { return wait(clone(items.filter((item) => item.type === 'folder' && !item.sharedWithMe))) }
+  async folders() { return wait(clone(items.filter((item) => item.type === 'folder' && !item.sharedWithMe))) },
+  async folderDestinations(sourceId) {
+    const source = requireItem(sourceId)
+    const blocked = new Set([sourceId, ...(source.type === 'folder' ? descendantIds(sourceId) : [])])
+    return wait(clone(items.filter((item) => item.type === 'folder' && !item.sharedWithMe && !blocked.has(item.id))), 20)
+  }
 }
