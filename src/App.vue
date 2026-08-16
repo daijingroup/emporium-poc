@@ -28,6 +28,9 @@ const shareTargets = ref([])
 const shareTargetId = ref('')
 const sharePermission = ref('viewer')
 const shareEntries = ref([])
+const versionOpen = ref(false)
+const versionItem = ref(null)
+const versionEntries = ref([])
 
 function formatGb(bytes) { return `${(bytes / 1024 ** 3).toFixed(bytes % 1024 ** 3 === 0 ? 0 : 1)} GB` }
 async function refreshQuota() { quota.value = await emporiumApi.quota() }
@@ -139,6 +142,28 @@ async function revokeShare(entry) {
   await loadView()
 }
 
+async function openVersionHistory(item) {
+  menuItem.value = null
+  versionItem.value = item
+  versionEntries.value = await emporiumApi.versions(item.id)
+  versionOpen.value = true
+}
+
+function closeVersionHistory() {
+  versionOpen.value = false
+  versionItem.value = null
+  versionEntries.value = []
+}
+
+async function restoreVersion(version) {
+  if (!versionItem.value || version.current) return
+  const result = await emporiumApi.restoreVersion(versionItem.value.id, version.id)
+  versionItem.value = result.item
+  versionEntries.value = result.versions
+  statusMessage.value = `Version ${version.number} restored as the latest version`
+  await Promise.all([loadView(), refreshQuota()])
+}
+
 function openDialog(type, item = null) {
   menuItem.value = null
   dialog.value = { type, item }
@@ -242,7 +267,7 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
           <div v-if="loading" class="empty-state">Loading files…</div>
           <div v-else-if="filteredItems.length === 0" class="empty-state"><strong>No files here</strong><span>{{ query ? 'Try another search.' : 'This view is currently empty.' }}</span></div>
           <div v-for="item in filteredItems" v-else :key="item.id" class="file-row" @dblclick="openFolder(item)">
-            <button class="file-main" @click="openFolder(item)"><span class="file-name"><span :class="['file-icon', item.type]">{{ item.type === 'folder' ? '▰' : '▤' }}</span><span><strong>{{ item.name }}</strong><small v-if="item.size">{{ item.size }}<template v-if="item.sharedWithMe"> · Shared with you · {{ item.permission }}</template><template v-else-if="item.shared"> · Shared</template></small></span></span></button>
+            <button class="file-main" @click="openFolder(item)"><span class="file-name"><span :class="['file-icon', item.type]">{{ item.type === 'folder' ? '▰' : '▤' }}</span><span><strong>{{ item.name }}</strong><small v-if="item.size">{{ item.size }}<template v-if="item.sharedWithMe"> · Shared with you · {{ item.permission }}</template><template v-else-if="item.shared"> · Shared by you</template></small></span></span></button>
             <span>{{ item.owner }}</span><span>{{ item.modified }}</span><span><span class="region-chip">{{ item.region }}</span></span>
             <div class="row-actions">
               <button class="more" :aria-label="`Actions for ${item.name}`" @click.stop="menuItem = menuItem?.id === item.id ? null : item">•••</button>
@@ -250,6 +275,7 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
                 <template v-if="activeView !== 'Trash'">
                   <button v-if="item.type === 'folder' && activeView === 'My files'" @click="openFolder(item)">Open</button>
                   <button v-if="!item.sharedWithMe" @click="openShare(item)">Share</button>
+                  <button v-if="item.type === 'file' && !item.sharedWithMe" @click="openVersionHistory(item)">Version history</button>
                   <button v-if="!item.sharedWithMe" @click="openDialog('rename', item)">Rename</button><button v-if="!item.sharedWithMe" @click="openDialog('move', item)">Move</button><button v-if="!item.sharedWithMe" @click="openDialog('copy', item)">Copy</button>
                   <button v-if="!item.sharedWithMe" class="danger" @click="removeItem(item)">Move to Trash</button>
                 </template>
@@ -292,6 +318,20 @@ onMounted(() => Promise.all([loadView(), refreshQuota()]))
         </div>
         <div class="dialog-actions"><button type="button" class="ghost-action" @click="closeShare">Close</button><button class="secondary-action" type="submit" :disabled="!shareTargetId">Share</button></div>
       </form>
+    </div>
+
+    <div v-if="versionOpen" class="dialog-backdrop" @click.self="closeVersionHistory">
+      <section class="version-dialog" role="dialog" aria-modal="true" aria-labelledby="version-title">
+        <div class="upload-header"><div><p class="eyebrow">Version history</p><h2 id="version-title">{{ versionItem?.name }}</h2></div><button class="icon-button" aria-label="Close version history" @click="closeVersionHistory">×</button></div>
+        <p class="dialog-copy">Restoring an older version creates a new latest version. Existing history is retained.</p>
+        <div class="version-list" aria-label="File versions">
+          <article v-for="version in versionEntries" :key="version.id" class="version-item">
+            <div><div class="version-title"><strong>Version {{ version.number }}</strong><span v-if="version.current" class="current-chip">Current</span></div><p>{{ version.createdAt }} · {{ version.modifiedBy }} · {{ version.size }}</p><small v-if="version.restoredFrom">Restored from version {{ version.restoredFrom }}</small></div>
+            <button v-if="!version.current" class="ghost-action" :aria-label="`Restore version ${version.number}`" @click="restoreVersion(version)">Restore</button>
+          </article>
+        </div>
+        <div class="dialog-actions"><button class="ghost-action" @click="closeVersionHistory">Close</button></div>
+      </section>
     </div>
 
     <div v-if="uploadOpen" class="dialog-backdrop upload-backdrop" @click.self="closeUpload">
