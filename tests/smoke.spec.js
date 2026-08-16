@@ -29,6 +29,25 @@ test('creates and renames a folder', async ({ page }) => {
   await expect(page.getByText('Planning 2027', { exact: true })).toBeVisible()
 })
 
+test('keeps the same name when rename is unchanged', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Actions for Regional architecture.md' }).click()
+  await page.getByRole('button', { name: 'Rename' }).click()
+  await page.getByRole('button', { name: 'Save' }).click()
+  await expect(page.getByText('Regional architecture.md', { exact: true })).toBeVisible()
+  await expect(page.getByText('Regional architecture (2).md')).toHaveCount(0)
+})
+
+test('keeps the same name when moving within the same folder', async ({ page }) => {
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Actions for Regional architecture.md' }).click()
+  await page.getByRole('button', { name: 'Move' }).click()
+  await page.getByLabel('Destination').selectOption({ label: 'My files' })
+  await page.getByRole('button', { name: 'Move', exact: true }).click()
+  await expect(page.getByText('Regional architecture.md', { exact: true })).toBeVisible()
+  await expect(page.getByText('Regional architecture (2).md')).toHaveCount(0)
+})
+
 test('moves an item to trash and restores it', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('button', { name: 'Actions for Q3 roadmap.pdf' }).click()
